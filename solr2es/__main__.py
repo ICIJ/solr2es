@@ -14,6 +14,8 @@ import redis
 from aiopg.sa import create_engine
 from elasticsearch import Elasticsearch
 from elasticsearch_async import AsyncElasticsearch, AsyncTransport
+from langdetect import detect
+from langdetect.lang_detect_exception import LangDetectException
 from pysolr import Solr, SolrCoreAdmin
 
 from solr2es.postgresql_queue import PostgresqlQueueAsync, PostgresqlQueue
@@ -25,6 +27,33 @@ LOGGER.setLevel(logging.INFO)
 
 DEFAULT_ES_DOC_TYPE = 'doc'
 
+LANGUAGE_MAP = {
+    'en': 'ENGLISH',
+    'es': 'SPANISH',
+    'de': 'GERMAN',
+    'fr': 'FRENCH',
+    'ru': 'RUSSIAN',
+    'zh': 'CHINESE',
+    'pt': 'PORTUGUESE',
+    'it': 'ITALIAN',
+    'pl': 'POLISH',
+    'nl': 'DUTCH',
+    'ar': 'ARABIC',
+    'gl': 'GALICIAN',
+    'ca': 'CATALAN',
+    'sv': 'SWEDISH',
+    'ro': 'ROMANIAN',
+    'hu': 'HUNGARIAN',
+    'da': 'DANISH',
+    'sk': 'SLOVAK',
+    'eu': 'BASQUE',
+    'lt': 'LITHUANIAN',
+    'no': 'NORWEGIAN',
+    'sl': 'SLOVENIAN',
+    'et': 'ESTONIAN',
+    'be': 'BELARUSIAN',
+    'is': 'ICELANDIC'
+}
 
 class IllegalStateError(RuntimeError):
     def __init__(self, *args: object) -> None:
@@ -167,7 +196,8 @@ def translate_doc(row, translation_names, translation_regexps, default_values, t
         translated_value = value[0] if type(value) is list and len(value) > 0 else value
 
         if '.' in translated_key:
-            translated_value = reduce(lambda i, acc: (acc, i), reversed(translated_key.split('.')[1:] + [translated_value]))
+            translated_value = reduce(lambda i, acc: (acc, i),
+                                      reversed(translated_key.split('.')[1:] + [translated_value]))
             translated_key = translated_key.split('.')[0]
         elif translated_key == '_id':
             return key, value
@@ -176,7 +206,12 @@ def translate_doc(row, translation_names, translation_regexps, default_values, t
     defaults = default_values.copy()
     defaults.update({k: v for k, v in row.items() if k not in translation_ignores})
     translated = tuple(translate(k, v) for k, v in defaults.items())
-    return _tuples_to_dict(translated)
+    translated_as_dict = _tuples_to_dict(translated)
+    try:
+        translated_as_dict['language'] = LANGUAGE_MAP.get(detect(translated_as_dict['content']), 'UNKNOWN')
+    except LangDetectException:
+        translated_as_dict['language'] = 'UNKNOWN'
+    return translated_as_dict
 
 
 def _translate_key(key, translation_names, translation_regexps) -> str:
@@ -429,5 +464,5 @@ def main():
         LOGGER.info('Solr status on %s is %s', solrurl, 'OK' if solr_status['status'][core_name] else 'KO')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

@@ -24,7 +24,8 @@ install_requires = [
     'asyncio_redis==0.15.1',
     'psycopg2-binary==2.7.6.1',
     'aiopg==0.15',
-    'sqlalchemy==1.2.14'
+    'sqlalchemy==1.2.14',
+    'langdetect==1.0.7'
 ]
 
 tests_require = [
