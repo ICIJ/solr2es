@@ -7,6 +7,7 @@ from collections import Mapping
 from functools import partial, reduce
 from itertools import chain
 from json import loads, dumps
+from os.path import dirname
 
 import aiohttp
 import asyncio_redis
@@ -211,6 +212,8 @@ def translate_doc(row, translation_names, translation_regexps, default_values, t
         translated_as_dict['language'] = LANGUAGE_MAP.get(detect(translated_as_dict['content']), 'UNKNOWN')
     except LangDetectException:
         translated_as_dict['language'] = 'UNKNOWN'
+    translated_as_dict['path'] = '/vault/' + translated_as_dict['path']
+    translated_as_dict['dirname'] = dirname(translated_as_dict['path'])
     return translated_as_dict
 
 
