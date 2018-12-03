@@ -70,12 +70,12 @@ If the Solr record has a field *nested_a_b*, the Elasticsearch record will get a
     {"nested_a_b": {"name": "nested.a.b"}}
 
 
-5. Use the property *name* with some regex groups capture to rename a bulk of Solr fields in Elasticsearch.
+5. Use the property *name* with some regex groups capture to rename a bulk of Solr fields in Elasticsearch by adding `[regexp]` at the beginning of the field.
 This will rename all the fields prefixed by *solr_* into *elasticsearch_*.
 
 ::
 
-    {"solr_(.*)": {"name": "elasticsearch_\\1"}}
+    {"[regexp]solr_(.*)": {"name": "elasticsearch_\\1"}}
 
 
 Develop
