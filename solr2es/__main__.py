@@ -180,7 +180,7 @@ def create_es_actions(index_name, solr_results, translation_map) -> str:
     id_key = _get_id_field_name(translation_names)
 
     results = [({'index': {'_index': index_name, '_type': DEFAULT_ES_DOC_TYPE, '_id': row[id_key]}},
-                translate_doc(row, translation_names, translation_regexps, default_values, translation_ignores))
+                translate_doc(row[id_key], row, translation_names, translation_regexps, default_values, translation_ignores))
                 for row in solr_results]
     return '\n'.join(list(map(lambda d: dumps(d), chain(*results))))
 
@@ -191,10 +191,15 @@ def _get_id_field_name(translation_names):
     return id_key
 
 
-def translate_doc(row, translation_names, translation_regexps, default_values, translation_ignores) -> dict:
+def translate_doc(id, row, translation_names, translation_regexps, default_values, translation_ignores) -> dict:
     def translate(key, value):
         translated_key = _translate_key(key, translation_names, translation_regexps)
-        translated_value = value[0] if type(value) is list and len(value) > 0 else value
+        if type(value) is list and len(value) > 0:
+            translated_value = value[0]
+            if len(value) > 1:
+                LOGGER.info('multivalued field in doc id=%s key=%s size=%d', id, key, len(value))
+        else:
+            translated_value = value
 
         if '.' in translated_key:
             translated_value = reduce(lambda i, acc: (acc, i),
