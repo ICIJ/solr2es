@@ -63,6 +63,14 @@ class IllegalStateError(RuntimeError):
         super().__init__(*args)
 
 
+class TranslationMap(object):
+    def __init__(self, translation_map_dict) -> None:
+        self.default_values = {k: v['default'] for k, v in translation_map_dict.items() if 'default' in v}
+        self.names = {k: v['name'] for k, v in translation_map_dict.items() if 'name' in v and type(k) == str}
+        self.regexps = {k: v['name'] for k, v in translation_map_dict.items() if 'name' in v and type(k) != str}
+        self.ignores = {k for k, v in translation_map_dict.items() if 'ignore' in v and v['ignore']}
+
+
 class Solr2Es(object):
     def __init__(self, solr, es, refresh=False) -> None:
         super().__init__()
@@ -178,10 +186,7 @@ class Solr2EsAsync(object):
 
 
 def create_es_actions(index_name, solr_results, translation_map) -> str:
-    default_values = {k: v['default'] for k, v in translation_map.items() if 'default' in v}
-    translation_names = {k: v['name'] for k, v in translation_map.items() if 'name' in v and type(k) == str}
-    translation_regexps = {k: v['name'] for k, v in translation_map.items() if 'name' in v and type(k) != str}
-    translation_ignores = {k for k, v in translation_map.items() if 'ignore' in v and v['ignore']}
+    tm = TranslationMap(translation_map)
 
     id_key = _get_id_field_name(translation_map)
     routing_key = _get_routing_field_name(translation_map)
@@ -193,7 +198,7 @@ def create_es_actions(index_name, solr_results, translation_map) -> str:
         return {'index': index_params}
 
     results = [(create_action(row),
-                translate_doc(row[id_key], row, translation_names, translation_regexps, default_values, translation_ignores))
+                translate_doc(row[id_key], row, tm))
                 for row in solr_results]
     return '\n'.join(list(map(lambda d: dumps(d), chain(*results))))
 
@@ -214,9 +219,9 @@ def _get_id_field_name(translation_map):
     return id_key
 
 
-def translate_doc(id, row, translation_names, translation_regexps, default_values, translation_ignores) -> dict:
+def translate_doc(id, row, translation_map) -> dict:
     def translate(key, value):
-        translated_key = _translate_key(key, translation_names, translation_regexps)
+        translated_key = _translate_key(key, translation_map.names, translation_map.regexps)
         if type(value) is list and len(value) > 0:
             translated_value = value[0]
             if len(value) > 1:
@@ -232,8 +237,8 @@ def translate_doc(id, row, translation_names, translation_regexps, default_value
             return key, value
         return translated_key, translated_value
 
-    defaults = default_values.copy()
-    defaults.update({k: v for k, v in row.items() if k not in translation_ignores})
+    defaults = translation_map.default_values.copy()
+    defaults.update({k: v for k, v in row.items() if k not in translation_map.ignores})
     translated = tuple(translate(k, v) for k, v in defaults.items())
     translated_as_dict = _tuples_to_dict(translated)
     try:
