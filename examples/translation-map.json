@@ -2,7 +2,7 @@
   "extract_id":{"name": "_id", "ignore": true},
   "[regexp]tika_metadata_(.*)": {"name": "metadata.tika_metadata_\\1"},
   "extract_base_type": {"name": "contentType"},
-  "extract_paths": {"name": "path"},
+  "extract_paths": {"name": "path", "multivalued": false},
   "index_timestamp": {"name": "extractionDate"},
   "tika_content": {"name": "content", "default": ""},
   "extract_level": {"name": "extractionLevel", "default": 0},
