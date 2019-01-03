@@ -69,6 +69,36 @@ If the Solr record has a field *nested_a_b*, the Elasticsearch record will get a
 
     {"nested_a_b": {"name": "nested.a.b"}}
 
+5. Use the property *name* with some regex groups capture to rename a bulk of queue fields in Elasticsearch by adding `[regexp]` at the beginning of the field.
+This will rename all the fields prefixed by *queue_* into *elasticsearch_*.
+
+::
+
+    {"[regexp]queue_(.*)": {"name": "elasticsearch_\\1"}}
+
+6. Use the property *ignore* at *true* to ignore some fields from the queue to Elasticsearch.
+
+::
+
+    {"ignored_field": {"ignore": true}}
+
+7. Use the property *routing_field* set to *true* to use one field for routing in elasticsearch. An exception will be raised if several fields are set to true.
+
+::
+
+    {"my_root_doc": {"routing_field": true}}
+
+8. Use the property *multivalued* set to *false* to ignore multi valued array field. Get the first value instead. By default the array is copied.
+
+::
+
+    {"my_array": {"multivalued": false}}
+
+
+
+**execution**
+
+1. Execute a dump from Solr into Postgresql specifying the Solr host, the Solr core, the Solr id and the Postgresql DSN
 
 5. Use the property *name* with some regex groups capture to rename a bulk of Solr fields in Elasticsearch by adding `[regexp]` at the beginning of the field.
 This will rename all the fields prefixed by *solr_* into *elasticsearch_*.
