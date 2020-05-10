@@ -236,6 +236,8 @@ def translate_doc(row, translation_map) -> dict:
         translated_as_dict['language'] = 'UNKNOWN'
     translated_as_dict['path'] = '/vault/' + translated_as_dict['path']
     translated_as_dict['dirname'] = dirname(translated_as_dict['path'])
+    if '.' not in translated_as_dict['extractionDate']:
+        translated_as_dict['extractionDate'] = translated_as_dict['extractionDate'][:-1] + '.000Z'
     return translated_as_dict
 
 
