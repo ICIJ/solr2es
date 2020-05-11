@@ -96,7 +96,8 @@ class Solr2Es(object):
             self.es.indices.create(index_name, body=mapping)
         for results in self.produce_results(solr_filter_query=solr_filter_query,
                                             sort_field=sort_field, solr_rows_pagination=solr_rows_pagination):
-            actions = create_es_actions(index_name, results, translation_map)
+            actionsAsList = create_es_actions(index_name, results, translation_map)
+            actions = '\n'.join(list(map(lambda d: dumps(d), chain(*actionsAsList))))
             response = self.es.bulk(actions, index_name, DEFAULT_ES_DOC_TYPE, refresh=self.refresh)
             nb_results += len(results)
             if response['errors']:
@@ -141,9 +142,14 @@ class Solr2EsAsync(object):
         nb_results = 0
         async for results in self.produce_results(solr_filter_query=solr_filter_query,
                                                   sort_field=sort_field, solr_rows_pagination=solr_rows_pagination):
-            actions = create_es_actions(index_name, results, translation_map)
-            await self.aes.bulk(actions, index_name, DEFAULT_ES_DOC_TYPE, refresh=self.refresh)
+            actionsAsList = create_es_actions(index_name, results, translation_map)
+            actions = '\n'.join(list(map(lambda d: dumps(d), chain(*actionsAsList))))
+            response = await self.aes.bulk(actions, index_name, DEFAULT_ES_DOC_TYPE, refresh=self.refresh)
             nb_results += len(results)
+            if response['errors']:
+                for err in response['items']:
+                    LOGGER.warning(err)
+                nb_results -= len(response['items'])
         return nb_results
 
     async def produce_results(self, solr_filter_query='*', sort_field=DEFAULT_ID_FIELD, solr_rows_pagination=10):
@@ -169,7 +175,7 @@ class Solr2EsAsync(object):
                     cursor_ended = True
         LOGGER.info('processed %s documents', nb_results)
 
-    async def resume(self, queue, index_name, es_index_body_str=None, translation_map=TranslationMap()):
+    async def resume(self, queue, index_name, es_index_body_str=None, translation_map=TranslationMap()) -> int:
         if not await self.aes.indices.exists([index_name]):
             await self.aes.indices.create(index_name, body=es_index_body_str)
 
@@ -177,13 +183,14 @@ class Solr2EsAsync(object):
         nb_total = await queue.size()
         LOGGER.info('found %s documents', nb_total)
 
-        results = [''] 
+        results = ['']
         while results:
             try:
                 results = await queue.pop()
                 if results == []:
                     break
-                actions = create_es_actions(index_name, results, translation_map)
+                actionsAsList = create_es_actions(index_name, results, translation_map)
+                actions = '\n'.join(list(map(lambda d: dumps(d), chain(*actionsAsList))))
                 response = await self.aes.bulk(actions, index_name, DEFAULT_ES_DOC_TYPE, refresh=self.refresh)
                 nb_results += len(results)
                 if response['errors']:
@@ -199,7 +206,7 @@ class Solr2EsAsync(object):
         return nb_results
 
 
-def create_es_actions(index_name, solr_results, translation_map) -> str:
+def create_es_actions(index_name, solr_results, translation_map) -> list:
     routing_key = translation_map.routing_key_field_name
 
     def create_action(row):
@@ -208,10 +215,9 @@ def create_es_actions(index_name, solr_results, translation_map) -> str:
             index_params['_routing'] = row[routing_key]
         return {'index': index_params}
 
-    results = [(create_action(row),
+    return [(create_action(row),
                 translate_doc(row, translation_map))
                 for row in solr_results]
-    return '\n'.join(list(map(lambda d: dumps(d), chain(*results))))
 
 
 def translate_doc(row, translation_map) -> dict:
@@ -225,8 +231,7 @@ def translate_doc(row, translation_map) -> dict:
             translated_value = value
 
         if '.' in translated_key:
-            translated_value = reduce(lambda i, acc: (acc, i),
-                                      reversed(translated_key.split('.')[1:] + [translated_value]))
+            translated_value = reduce(lambda i, acc: (acc, i), reversed(translated_key.split('.')[1:] + [translated_value]))
             translated_key = translated_key.split('.')[0]
         elif translated_key == '_id':
             return key, value
@@ -337,8 +342,7 @@ async def aioresume_from_pgsql(pgsqldsn, eshost, name, translationmap, es_index_
     es_index_body_str = None if es_index_body is None else dumps(es_index_body)
 
     elasticsearch = AsyncElasticsearch([eshost], AsyncTransport, timeout=60)
-    await Solr2EsAsync(None, elasticsearch, None).\
-        resume(psql_queue, name, es_index_body_str, translationmap)
+    await Solr2EsAsync(None, elasticsearch, None).resume(psql_queue, name, es_index_body_str, translationmap)
     await psql_queue.close()
     await elasticsearch.transport.close()
 
