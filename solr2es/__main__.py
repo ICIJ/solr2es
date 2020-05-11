@@ -177,13 +177,19 @@ class Solr2EsAsync(object):
         nb_total = await queue.size()
         LOGGER.info('found %s documents', nb_total)
 
-        results = ['']
+        results = [''] 
         while results:
             try:
                 results = await queue.pop()
+                if results == []:
+                    break
                 actions = create_es_actions(index_name, results, translation_map)
-                await self.aes.bulk(actions, index_name, DEFAULT_ES_DOC_TYPE, refresh=self.refresh)
+                response = await self.aes.bulk(actions, index_name, DEFAULT_ES_DOC_TYPE, refresh=self.refresh)
                 nb_results += len(results)
+                if response['errors']:
+                    for err in response['items']:
+                        LOGGER.warning(err)
+                    nb_results -= len(response['items'])
                 if nb_results % 10000 == 0:
                     LOGGER.info('read %s docs of %s (%.2f %% done)', nb_results, nb_total,
                                 (100 * nb_results) / nb_total)
@@ -333,6 +339,7 @@ async def aioresume_from_pgsql(pgsqldsn, eshost, name, translationmap, es_index_
     elasticsearch = AsyncElasticsearch([eshost], AsyncTransport, timeout=60)
     await Solr2EsAsync(None, elasticsearch, None).\
         resume(psql_queue, name, es_index_body_str, translationmap)
+    await psql_queue.close()
     await elasticsearch.transport.close()
 
 
