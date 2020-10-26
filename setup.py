@@ -26,7 +26,8 @@ install_requires = [
     'psycopg2-binary==2.7.6.1',
     'aiopg==0.15',
     'sqlalchemy==1.2.14',
-    'langdetect==1.0.7'
+    'langdetect==1.0.7',
+    'python-dateutil=2.8.1'
 ]
 
 tests_require = [

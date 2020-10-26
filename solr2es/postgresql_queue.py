@@ -1,5 +1,8 @@
+import logging
 from asyncio import ensure_future, wait_for, futures
 from json import dumps, loads
+
+import psycopg2
 import sqlalchemy as sa
 
 from psycopg2.extras import execute_values
@@ -7,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 POP_DOCS_SQL = 'UPDATE solr2es_queue SET done = \'t\' WHERE uid IN (' \
                'SELECT uid FROM solr2es_queue WHERE done = \'f\' ORDER BY uid ' \
-               'FOR UPDATE SKIP LOCKED LIMIT 10) RETURNING json'
+               'FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING json'
 
 CREATE_TABLE_SQL = 'CREATE TABLE IF NOT EXISTS "solr2es_queue" (' \
                    'uid serial primary key,' \
@@ -17,6 +20,8 @@ CREATE_TABLE_SQL = 'CREATE TABLE IF NOT EXISTS "solr2es_queue" (' \
 
 INSERT_SQL = 'INSERT INTO solr2es_queue (id, json) VALUES %s'
 SIZE_SQL = 'SELECT COUNT(*) FROM solr2es_queue WHERE done = \'f\''
+
+SQL_FIELD_MAX_LENGTH = 50000000
 
 metadata = sa.MetaData()
 queue_table = sa.Table('solr2es_queue', metadata,
@@ -65,9 +70,23 @@ class PostgresqlQueueAsync(object):
 
     async def push(self, value_list) -> None:
         async with self.postgresql.acquire() as conn:
-            values = list(({'id': r[self.unique_id], 'json': dumps(r)} for r in value_list))
-            await conn.execute(insert(queue_table).values(values).on_conflict_do_nothing(index_elements=['id']))
-            await conn.execute('NOTIFY solr2es, \'notify\'')
+            values = []
+            for value in value_list:
+                truncated_fields = ['suggest', 'suggest_text', 'tika_content']
+                for field in truncated_fields:
+                    if field in value.keys():
+                        value[field] = (str(value[field])[:SQL_FIELD_MAX_LENGTH] + '...') if len(str(value[field])) > SQL_FIELD_MAX_LENGTH else str(value[field])
+                json = dumps(value)
+                values.append({'id': value[self.unique_id], 'json': json})
+            try:
+                await conn.execute(insert(queue_table).values(values).on_conflict_do_nothing(index_elements=['id']))
+                await conn.execute('NOTIFY solr2es, \'notify\'')
+            except Exception as inst:
+                logging.getLogger('solr2es').warning('Error while inserting %s value(s)', str(len(values)))
+                logging.getLogger('solr2es').warning(list(r['id'] for r in values))
+                logging.getLogger('solr2es').warning(type(inst))
+                logging.getLogger('solr2es').warning(inst.args)
+                logging.getLogger('solr2es').warning(inst)
 
     async def create_table_if_not_exists(self):
         async with self.postgresql.acquire() as conn:
@@ -91,3 +110,7 @@ class PostgresqlQueueAsync(object):
         async with self.postgresql.acquire() as conn:
             result_proxy = await conn.execute(SIZE_SQL)
             return await result_proxy.scalar()
+
+    async def close(self):
+        self.postgresql.close()
+        await self.postgresql.wait_closed()

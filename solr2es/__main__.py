@@ -19,6 +19,7 @@ from elasticsearch_async import AsyncElasticsearch, AsyncTransport
 from langdetect import detect
 from langdetect.lang_detect_exception import LangDetectException
 from pysolr import Solr, SolrCoreAdmin
+from dateutil import parser
 
 from solr2es.postgresql_queue import PostgresqlQueueAsync, PostgresqlQueue
 from solr2es.redis_queue import RedisQueueAsync, RedisQueue
@@ -102,8 +103,9 @@ class Solr2Es(object):
             response = self.es.bulk(actions, index_name, DEFAULT_ES_DOC_TYPE, refresh=self.refresh)
             nb_results += len(results)
             if response['errors']:
-                for err in response['items']:
-                    LOGGER.warning(err)
+                for item in response['items']:
+                    if item and 'index' in item and 'error' in item['index']:
+                        LOGGER.error('error while inserting document ' + str(item['index']['_id']) + ' : ' + str(item['index']['error']))
                 nb_results -= len(response['items'])
         LOGGER.info('processed %s documents', nb_results)
         return nb_results
@@ -148,8 +150,9 @@ class Solr2EsAsync(object):
             response = await self.aes.bulk(actions, index_name, DEFAULT_ES_DOC_TYPE, refresh=self.refresh)
             nb_results += len(results)
             if response['errors']:
-                for err in response['items']:
-                    LOGGER.warning(err)
+                for item in response['items']:
+                    if item and 'index' in item and 'error' in item['index']:
+                        LOGGER.error('error while inserting document ' + str(item['index']['_id']) + ' : ' + str(item['index']['error']))
                 nb_results -= len(response['items'])
         return nb_results
 
@@ -161,19 +164,23 @@ class Solr2EsAsync(object):
                       fq=solr_filter_query, fl='*', rows=solr_rows_pagination)
         while not cursor_ended:
             async with self.aiohttp_session.get(self.solr_url + '/select/', params=kwargs) as resp:
-                json = loads(await resp.text())
-                if kwargs['cursorMark'] == '*':
-                    nb_total = int(json['response']['numFound'])
-                    LOGGER.info('found %s documents', json['response']['numFound'])
-                if kwargs['cursorMark'] != json['nextCursorMark']:
-                    kwargs['cursorMark'] = json['nextCursorMark']
-                    nb_results += len(json['response']['docs'])
-                    if nb_results % 10000 == 0:
-                        LOGGER.info('read %s docs of %s (%.2f %% done)', nb_results, nb_total,
-                                    (100 * nb_results) / nb_total)
-                    yield json['response']['docs']
-                else:
+                try:
+                    json = loads(await resp.text())
+                    if kwargs['cursorMark'] == '*':
+                        nb_total = int(json['response']['numFound'])
+                        LOGGER.info('found %s documents', json['response']['numFound'])
+                    if kwargs['cursorMark'] != json['nextCursorMark']:
+                        kwargs['cursorMark'] = json['nextCursorMark']
+                        nb_results += len(json['response']['docs'])
+                        if nb_results % 10000 == 0:
+                            LOGGER.info('read %s docs of %s (%.2f %% done)', nb_results, nb_total,
+                                        (100 * nb_results) / nb_total)
+                        yield json['response']['docs']
+                    else:
+                        cursor_ended = True
+                except Exception:
                     cursor_ended = True
+                    LOGGER.warning('Error fetching rows from solr')
         LOGGER.info('processed %s documents', nb_results)
 
     async def resume(self, queue, index_name, es_index_body_str=None, translation_map=TranslationMap()) -> int:
@@ -191,25 +198,32 @@ class Solr2EsAsync(object):
                 if results == []:
                     break
                 actions_as_list = create_es_actions(index_name, results, translation_map)
+                actions_as_list[0][1]['content'] = actions_as_list[0][1]['content'][:50000000]
                 actions = '\n'.join(list(map(lambda d: dumps(d), chain(*actions_as_list))))
                 response = await self.aes.bulk(actions, index_name, DEFAULT_ES_DOC_TYPE, refresh=self.refresh)
                 nb_results += len(results)
                 if response['errors']:
-                    for err in response['items']:
-                        LOGGER.warning(err)
+                    for item in response['items']:
+                        if item and 'index' in item and 'error' in item['index']:
+                            LOGGER.error('error while inserting document ' + str(item['index']['_id']) + ' : ' + str(item['index']['error']))
                     nb_results -= len(response['items'])
                 if nb_results % 10000 == 0:
                     LOGGER.info('read %s docs of %s (%.2f %% done)', nb_results, nb_total,
                                 (100 * nb_results) / nb_total)
-            except Exception:
-                LOGGER.exception('exception while reading results %s' % list(
-                    r.get(translation_map.get_id_field_name()) for r in results))
+            except Exception as exception:
+                LOGGER.warning(exception)
+                LOGGER.warning(results)
+                if isinstance(results, str):
+                    LOGGER.warning('warning while reading results %s' % results)
+                else:
+                    LOGGER.warning('warning while reading results %s' % list(
+                        r for r in results))
         return nb_results
 
 
 def create_es_actions(index_name, solr_results, translation_map) -> list:
     routing_key = translation_map.routing_key_field_name
-    multivalued_ignored_fields = translation_map.multivalued_ignored
+    multivalued_ignored_fields = ['extract_paths']
 
     def create_action(row) -> dict:
         index_params = {'_index': index_name, '_type': DEFAULT_ES_DOC_TYPE, '_id': row[translation_map.get_id_field_name()]}
@@ -217,7 +231,7 @@ def create_es_actions(index_name, solr_results, translation_map) -> list:
             index_params['_routing'] = row[routing_key]
         return {'index': index_params}
 
-    def has_duplicates(results) -> bool:
+    def has_duplicated_path(results) -> bool:
         for result in results:
             for field in multivalued_ignored_fields:
                 if type(result[field]) is list:
@@ -238,7 +252,7 @@ def create_es_actions(index_name, solr_results, translation_map) -> list:
     results = [(create_action(row),
                 translate_doc(row, translation_map))
                 for row in solr_results]
-    if has_duplicates(solr_results):
+    if has_duplicated_path(solr_results):
         for row in solr_results:
             results += create_duplicate_actions(index_name, row)
     return results
@@ -261,6 +275,16 @@ def translate_doc(row, translation_map) -> dict:
             return key, value
         return translated_key, translated_value
 
+    def format_date(date) -> str:
+        try:
+            new_date = parser.parse(date).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+            if len(new_date) == 24:
+                return new_date
+            else:
+                return ''
+        except Exception:
+            return ''
+
     defaults = translation_map.default_values.copy()
     defaults.update({k: v for k, v in row.items() if k not in translation_map.ignores})
     translated = tuple(translate(k, v) for k, v in defaults.items())
@@ -271,8 +295,48 @@ def translate_doc(row, translation_map) -> dict:
         translated_as_dict['language'] = 'UNKNOWN'
     translated_as_dict['path'] = '/vault/' + translated_as_dict['path']
     translated_as_dict['dirname'] = dirname(translated_as_dict['path'])
-    if '.' not in translated_as_dict['extractionDate']:
-        translated_as_dict['extractionDate'] = translated_as_dict['extractionDate'][:-1] + '.000Z'
+    # Try to format extractionDate according to ES mapping
+    if 'extractionDate' in translated_as_dict:
+        date = format_date(translated_as_dict['extractionDate'])
+        if date:
+            translated_as_dict['extractionDate'] = date
+        else:
+            LOGGER.warning('warning while formatting extractionDate for document id=%s, weird date is %s', row[translation_map.get_id_field_name()], translated_as_dict['extractionDate'])
+            del translated_as_dict['extractionDate']
+    if 'contentLength' in translated_as_dict:
+        translated_as_dict['contentLength'] = min(translated_as_dict['contentLength'], 2147483647)
+    for field in [
+        'tika_metadata_creation_date',
+        'tika_metadata_creation_date_iso8601',
+        'tika_metadata_custom_creation_date',
+        'tika_metadata_custom_date',
+        'tika_metadata_custom_docdate',
+        'tika_metadata_custom_lastsaved',
+        'tika_metadata_date',
+        'tika_metadata_date_time_original',
+        'tika_metadata_dc_date_modified',
+        'tika_metadata_dcterms_created',
+        'tika_metadata_dcterms_created_iso8601',
+        'tika_metadata_document_date',
+        'tika_metadata_exif_datetimeoriginal',
+        'tika_metadata_exif_datetimeoriginal_iso8601',
+        'tika_metadata_last_modified',
+        'tika_metadata_last_printed',
+        'tika_metadata_last_printed_iso8601',
+        'tika_metadata_meta_creation_date',
+        'tika_metadata_meta_creation_date_iso8601',
+        'tika_metadata_meta_print_date',
+        'tika_metadata_meta_print_date_iso8601',
+        'tika_metadata_modify_date',
+        'tika_metadata_pdf_docinfo_custom_creation_date'
+    ]:
+        if 'metadata' in translated_as_dict and field in translated_as_dict['metadata']:
+            date = format_date(translated_as_dict['metadata'][field])
+            if date:
+                translated_as_dict['metadata'][field] = date
+            else:
+                LOGGER.warning('warning while formatting %s for document id=%s, weird date is %s', field, row[translation_map.get_id_field_name()], translated_as_dict['metadata'][field])
+                del translated_as_dict['metadata'][field]
     return translated_as_dict
 
 
@@ -371,12 +435,12 @@ async def aioresume_from_pgsql(pgsqldsn, eshost, name, translationmap, es_index_
     await elasticsearch.transport.close()
 
 
-async def aiomigrate(solrhost, eshost, name, solrfq, solrid):
+async def aiomigrate(solrhost, eshost, name, translationmap, solrfq, solrid):
     LOGGER.info('asyncio migrate from solr (%s) into elasticsearch (%s) index %s '
                 'with filter query (%s) and with id (%s)', solrhost, eshost, name, solrfq, solrid)
     async with aiohttp.ClientSession() as session:
         await Solr2EsAsync(session, AsyncElasticsearch(hosts=[eshost]), solrhost).migrate(
-            name, solr_filter_query=solrfq, sort_field=solrid)
+            name, translation_map=translationmap, solr_filter_query=solrfq, sort_field=solrid)
 
 
 def usage(argv):
@@ -506,7 +570,7 @@ def main():
     es_index_body = _get_es_mappings_and_settings(essetting, esmapping)
 
     if action == 'migrate':
-        aioloop.run_until_complete(aiomigrate(solrurl, eshost, index_name, solrfq, solrid)) if with_asyncio \
+        aioloop.run_until_complete(aiomigrate(solrurl, eshost, index_name, translationmap, solrfq, solrid)) if with_asyncio \
             else migrate(solrurl, eshost, index_name, solrfq, solrid)
     elif action == 'dump':
         aioloop.run_until_complete(aiodump_into_redis(solrurl, redishost, solrfq, solrid)) if with_asyncio \
